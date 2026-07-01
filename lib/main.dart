@@ -1,41 +1,15 @@
 import 'dart:async';
-import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-/// Must match the channel name used in MainActivity.kt.
-const EventChannel _smsChannel = EventChannel('com.perkypet.listen_my_phone/sms');
-
-/// Key used to persist the message history in local storage.
-const String _storageKey = 'saved_messages';
-
-final FlutterLocalNotificationsPlugin _notifications =
-    FlutterLocalNotificationsPlugin();
-
-/// The Android notification channel every SMS notification is posted to.
-const AndroidNotificationChannel _androidChannel = AndroidNotificationChannel(
-  'incoming_sms',
-  'Incoming SMS',
-  description: 'Shown when this phone receives a text message',
-  importance: Importance.high,
-);
+import 'native.dart';
+import 'settings_page.dart';
+import 'theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  const initSettings = InitializationSettings(
-    android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-  );
-  await _notifications.initialize(settings: initSettings);
-  await _notifications
-      .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin>()
-      ?.createNotificationChannel(_androidChannel);
-
   runApp(const ListenMyPhoneApp());
 }
 
@@ -46,33 +20,11 @@ class ListenMyPhoneApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Listen My Phone',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
-        useMaterial3: true,
-      ),
+      debugShowCheckedModeBanner: false,
+      theme: buildAppleTheme(),
       home: const HomePage(),
     );
   }
-}
-
-class SmsMessage {
-  SmsMessage({required this.sender, required this.body, required this.time});
-
-  final String sender;
-  final String body;
-  final DateTime time;
-
-  Map<String, dynamic> toJson() => {
-        'sender': sender,
-        'body': body,
-        'time': time.toIso8601String(),
-      };
-
-  factory SmsMessage.fromJson(Map<String, dynamic> json) => SmsMessage(
-        sender: json['sender'] as String? ?? 'Unknown',
-        body: json['body'] as String? ?? '',
-        time: DateTime.tryParse(json['time'] as String? ?? '') ?? DateTime.now(),
-      );
 }
 
 class HomePage extends StatefulWidget {
@@ -82,126 +34,80 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
-  bool _listening = false;
-  bool _smsGranted = false;
-  bool _notifGranted = false;
-  StreamSubscription<dynamic>? _subscription;
-  final List<SmsMessage> _messages = [];
-  int _notificationId = 0;
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
+  bool _accessGranted = false;
+  final List<CapturedEvent> _events = [];
+  final Map<String, Uint8List?> _iconCache = {};
+  StreamSubscription<dynamic>? _sub;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _init();
-  }
-
-  Future<void> _init() async {
-    await _loadMessages();
-    await _requestPermissions();
-    // If SMS permission is granted, start listening automatically.
-    if (_smsGranted) {
-      _startListening();
-    }
-  }
-
-  // ---------- Local storage ----------
-
-  Future<void> _loadMessages() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getStringList(_storageKey) ?? [];
-    final loaded = raw
-        .map((s) => SmsMessage.fromJson(jsonDecode(s) as Map<String, dynamic>))
-        .toList();
-    if (!mounted) return;
-    setState(() {
-      _messages
-        ..clear()
-        ..addAll(loaded);
-    });
-  }
-
-  Future<void> _saveMessages() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = _messages.map((m) => jsonEncode(m.toJson())).toList();
-    await prefs.setStringList(_storageKey, raw);
-  }
-
-  Future<void> _clearMessages() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_storageKey);
-    if (!mounted) return;
-    setState(_messages.clear);
-  }
-
-  // ---------- Permissions ----------
-
-  Future<void> _requestPermissions() async {
-    final statuses = await [Permission.sms, Permission.notification].request();
-    if (!mounted) return;
-    setState(() {
-      _smsGranted = statuses[Permission.sms]?.isGranted ?? false;
-      _notifGranted = statuses[Permission.notification]?.isGranted ?? false;
-    });
-  }
-
-  // ---------- SMS listening ----------
-
-  void _startListening() {
-    _subscription ??= _smsChannel.receiveBroadcastStream().listen(
-      _onSmsReceived,
-      onError: (Object error) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('SMS stream error: $error')),
-        );
-      },
-    );
-    setState(() => _listening = true);
-  }
-
-  void _stopListening() {
-    _subscription?.cancel();
-    _subscription = null;
-    setState(() => _listening = false);
-  }
-
-  Future<void> _onSmsReceived(dynamic event) async {
-    final map = Map<Object?, Object?>.from(event as Map);
-    final sender = (map['sender'] as String?) ?? 'Unknown';
-    final body = (map['body'] as String?) ?? '';
-
-    setState(() {
-      _messages.insert(
-          0, SmsMessage(sender: sender, body: body, time: DateTime.now()));
-    });
-    await _saveMessages();
-    await _showNotification(sender, body);
-  }
-
-  // ---------- Notifications ----------
-
-  Future<void> _showNotification(String title, String body) async {
-    const details = NotificationDetails(
-      android: AndroidNotificationDetails(
-        'incoming_sms',
-        'Incoming SMS',
-        importance: Importance.high,
-        priority: Priority.high,
-      ),
-    );
-    await _notifications.show(
-      id: _notificationId++,
-      title: title,
-      body: body,
-      notificationDetails: details,
-    );
   }
 
   @override
   void dispose() {
-    _subscription?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _sub?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refreshAll();
+    }
+  }
+
+  Future<void> _init() async {
+    await Permission.notification.request();
+    await _refreshAll();
+    _sub = notifChannel
+        .receiveBroadcastStream()
+        .listen(_onNotification, onError: (_) {});
+  }
+
+  Future<void> _refreshAll() async {
+    final granted = await Native.isAccessGranted();
+    final events = await Native.getEvents();
+    if (!mounted) return;
+    setState(() {
+      _accessGranted = granted;
+      _events
+        ..clear()
+        ..addAll(events);
+    });
+    await _ensureIcons(events.map((e) => e.package));
+  }
+
+  /// Fetch (and cache) the icon for every package we don't already have.
+  Future<void> _ensureIcons(Iterable<String> packages) async {
+    final missing =
+        packages.where((p) => !_iconCache.containsKey(p)).toSet();
+    if (missing.isEmpty) return;
+    for (final pkg in missing) {
+      _iconCache[pkg] = await Native.getAppIcon(pkg);
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _onNotification(dynamic event) async {
+    final e = CapturedEvent.fromMap(Map<String, dynamic>.from(event as Map));
+    setState(() => _events.insert(0, e));
+    await _ensureIcons([e.package]);
+  }
+
+  Future<void> _deleteEvent(CapturedEvent e) async {
+    setState(() => _events.removeWhere((x) => x.id == e.id));
+    await Native.removeEvent(e.id);
+  }
+
+  Future<void> _openSettings() async {
+    await Navigator.of(context)
+        .push(MaterialPageRoute<void>(builder: (_) => const SettingsPage()));
+    _refreshAll();
   }
 
   // ---------- UI ----------
@@ -211,124 +117,183 @@ class _HomePageState extends State<HomePage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Listen My Phone'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
-          if (_messages.isNotEmpty)
-            IconButton(
-              tooltip: 'Clear history',
-              icon: const Icon(Icons.delete_outline),
-              onPressed: _clearMessages,
-            ),
+          IconButton(
+            tooltip: 'Settings',
+            icon: const Icon(Icons.settings_outlined),
+            onPressed: _openSettings,
+          ),
         ],
       ),
       body: Column(
         children: [
-          Card(
-            margin: const EdgeInsets.all(12),
-            child: SwitchListTile(
-              title: const Text('Listen for SMS'),
-              subtitle: Text(
-                _listening
-                    ? 'Listening — new texts pop up as a notification'
-                    : 'Off — turn on to start catching texts',
-              ),
-              value: _listening,
-              onChanged: (value) =>
-                  value ? _startListening() : _stopListening(),
-              secondary: Icon(
-                _listening ? Icons.hearing : Icons.hearing_disabled,
-                color: _listening ? Colors.teal : Colors.grey,
-              ),
-            ),
-          ),
-          _permissionRow(
-            label: 'SMS permission',
-            granted: _smsGranted,
-          ),
-          _permissionRow(
-            label: 'Notification permission',
-            granted: _notifGranted,
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Re-check permissions'),
-                    onPressed: _requestPermissions,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: FilledButton.tonalIcon(
-                    icon: const Icon(Icons.notifications_active),
-                    label: const Text('Test notification'),
-                    onPressed: () => _showNotification(
-                      'Test notification',
-                      'If you see this, notifications work! 🎉',
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const Divider(height: 16),
+          if (!_accessGranted) _accessBanner(),
           Expanded(
-            child: _messages.isEmpty
-                ? const Center(
-                    child: Text(
-                      'No messages yet.\nSend an SMS to this phone to test.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey),
-                    ),
-                  )
-                : ListView.separated(
-                    itemCount: _messages.length,
-                    separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final m = _messages[index];
-                      return ListTile(
-                        leading: const CircleAvatar(child: Icon(Icons.sms)),
-                        title: Text(m.sender),
-                        subtitle: Text(m.body),
-                        trailing: Text(
-                          '${m.time.hour.toString().padLeft(2, '0')}:'
-                          '${m.time.minute.toString().padLeft(2, '0')}',
-                          style: const TextStyle(color: Colors.grey),
-                        ),
-                      );
-                    },
-                  ),
+            child: _events.isEmpty ? _emptyState() : _eventList(),
           ),
         ],
       ),
     );
   }
 
-  Widget _permissionRow({required String label, required bool granted}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+  Widget _accessBanner() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.tileDark,
+        borderRadius: BorderRadius.circular(18),
+      ),
       child: Row(
         children: [
-          Icon(
-            granted ? Icons.check_circle : Icons.cancel,
-            color: granted ? Colors.green : Colors.red,
-            size: 20,
-          ),
-          const SizedBox(width: 8),
-          Text(label),
-          const Spacer(),
-          Text(
-            granted ? 'Granted' : 'Not granted',
-            style: TextStyle(
-              color: granted ? Colors.green : Colors.red,
-              fontWeight: FontWeight.w600,
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Notification access is off',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: -0.374)),
+                SizedBox(height: 4),
+                Text('Turn it on so we can capture notifications.',
+                    style: TextStyle(color: Color(0xFFCCCCCC), fontSize: 14)),
+              ],
             ),
+          ),
+          const SizedBox(width: 12),
+          FilledButton(
+            onPressed: Native.openAccessSettings,
+            child: const Text('Grant'),
           ),
         ],
       ),
     );
+  }
+
+  Widget _emptyState() {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(32),
+        child: Text(
+          'No captured notifications yet.\n\n'
+          'Open Settings → grant access → choose apps.\n'
+          'Then a notification from one of them appears here.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: AppColors.inkMuted, fontSize: 15, height: 1.4),
+        ),
+      ),
+    );
+  }
+
+  Widget _eventList() {
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+      itemCount: _events.length,
+      separatorBuilder: (_, _) => const SizedBox(height: 10),
+      itemBuilder: (context, index) => _eventCard(_events[index]),
+    );
+  }
+
+  Widget _eventCard(CapturedEvent e) {
+    return Dismissible(
+      key: ValueKey(e.id.isEmpty ? '${e.package}-${e.time.microsecondsSinceEpoch}' : e.id),
+      direction: DismissDirection.endToStart,
+      onDismissed: (_) => _deleteEvent(e),
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 22),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFF3B30),
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: const Icon(Icons.delete_outline, color: Colors.white),
+      ),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.canvas,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: AppColors.hairline),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _appIcon(e.package),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          e.appName,
+                          style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: -0.2,
+                              color: AppColors.ink),
+                        ),
+                      ),
+                      Text(_timeLabel(e.time),
+                          style: const TextStyle(
+                              fontSize: 12, color: AppColors.inkMuted)),
+                    ],
+                  ),
+                  if (e.title.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 3),
+                      child: Text(e.title,
+                          style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.ink)),
+                    ),
+                  if (e.text.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(e.text,
+                          style: const TextStyle(
+                              fontSize: 15,
+                              color: AppColors.ink,
+                              height: 1.3)),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _appIcon(String package) {
+    final bytes = _iconCache[package];
+    if (bytes != null) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(11),
+        child: Image.memory(bytes, width: 42, height: 42, fit: BoxFit.cover),
+      );
+    }
+    return Container(
+      width: 42,
+      height: 42,
+      decoration: BoxDecoration(
+        color: AppColors.actionBlue,
+        borderRadius: BorderRadius.circular(11),
+      ),
+      child: const Icon(Icons.notifications, color: Colors.white, size: 22),
+    );
+  }
+
+  String _timeLabel(DateTime t) {
+    final now = DateTime.now();
+    final hm =
+        '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+    final sameDay = t.year == now.year && t.month == now.month && t.day == now.day;
+    return sameDay ? hm : '${t.day}/${t.month} · $hm';
   }
 }

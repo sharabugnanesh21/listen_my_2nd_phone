@@ -1,34 +1,162 @@
 package com.perkypet.listen_my_phone
 
+import android.content.ComponentName
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.Drawable
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import android.util.Base64
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
+import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
 
 class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        val messenger = flutterEngine.dartExecutor.binaryMessenger
 
-        // Open a one-way pipe from native Android -> Flutter (an EventChannel is the
-        // "streaming" version of a MethodChannel). When Flutter starts listening we
-        // keep the sink so SmsReceiver can push each incoming SMS through it.
-        EventChannel(flutterEngine.dartExecutor.binaryMessenger, SMS_CHANNEL)
-            .setStreamHandler(object : EventChannel.StreamHandler {
+        // Make sure the notification channel exists so its sound is editable in Settings.
+        AppNotifications.ensureChannel(this)
+
+        // Stream of captured notifications: native service -> Flutter (live updates).
+        EventChannel(messenger, NOTIF_CHANNEL).setStreamHandler(
+            object : EventChannel.StreamHandler {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                    eventSink = events
+                    notifEventSink = events
                 }
 
                 override fun onCancel(arguments: Any?) {
-                    eventSink = null
+                    notifEventSink = null
                 }
-            })
+            },
+        )
+
+        // Request/response control channel.
+        MethodChannel(messenger, CONTROL_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "isAccessGranted" -> result.success(isNotificationAccessGranted())
+                "openAccessSettings" -> {
+                    startActivity(
+                        Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                    result.success(null)
+                }
+                "openSoundSettings" -> {
+                    openSoundSettings()
+                    result.success(null)
+                }
+                "getInstalledApps" -> getInstalledApps(result)
+                "getAppIcon" -> result.success(
+                    (call.arguments as? String)?.let { appIconBase64(it) },
+                )
+                "getEnabledPackages" -> result.success(AppStore.getEnabled(this).toList())
+                "setEnabledPackages" -> {
+                    val packages = (call.arguments as? List<*>)?.mapNotNull { it as? String }
+                        ?: emptyList()
+                    AppStore.setEnabled(this, packages)
+                    result.success(null)
+                }
+                "getCaptureAll" -> result.success(AppStore.getCaptureAll(this))
+                "setCaptureAll" -> {
+                    AppStore.setCaptureAll(this, call.arguments as? Boolean ?: false)
+                    result.success(null)
+                }
+                "getEvents" -> result.success(AppStore.getEventsJson(this))
+                "removeEvent" -> {
+                    (call.arguments as? String)?.let { AppStore.removeEvent(this, it) }
+                    result.success(null)
+                }
+                "clearEvents" -> {
+                    AppStore.clearEvents(this)
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    /** Opens the system screen where the user can change OUR app's notification sound. */
+    private fun openSoundSettings() {
+        AppNotifications.ensureChannel(this)
+        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                .putExtra(Settings.EXTRA_CHANNEL_ID, AppNotifications.CHANNEL_ID)
+        } else {
+            Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", packageName, null),
+            )
+        }
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
+    }
+
+    /** Has the user turned on "Notification access" for us in system settings? */
+    private fun isNotificationAccessGranted(): Boolean {
+        val enabled = Settings.Secure.getString(
+            contentResolver,
+            "enabled_notification_listeners",
+        ) ?: return false
+        return enabled.split(":").any {
+            ComponentName.unflattenFromString(it)?.packageName == packageName
+        }
+    }
+
+    /** Returns launchable apps as [{package, name, icon(base64 png)}], sorted by name. */
+    private fun getInstalledApps(result: MethodChannel.Result) {
+        Thread {
+            val pm = packageManager
+            val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
+                addCategory(Intent.CATEGORY_LAUNCHER)
+            }
+            val apps = pm.queryIntentActivities(mainIntent, 0)
+                .map { it.activityInfo.applicationInfo }
+                .distinctBy { it.packageName }
+                .filter { it.packageName != packageName }
+                .map { info ->
+                    mapOf(
+                        "package" to info.packageName,
+                        "name" to pm.getApplicationLabel(info).toString(),
+                        "icon" to drawableToBase64(pm.getApplicationIcon(info)),
+                    )
+                }
+                .sortedBy { (it["name"] as String).lowercase() }
+            runOnUiThread { result.success(apps) }
+        }.start()
+    }
+
+    private fun appIconBase64(pkg: String): String? = try {
+        drawableToBase64(packageManager.getApplicationIcon(pkg))
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun drawableToBase64(drawable: Drawable): String? = try {
+        val size = 72
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        drawable.setBounds(0, 0, size, size)
+        drawable.draw(canvas)
+        val stream = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+    } catch (e: Exception) {
+        null
     }
 
     companion object {
-        const val SMS_CHANNEL = "com.perkypet.listen_my_phone/sms"
+        const val NOTIF_CHANNEL = "com.perkypet.listen_my_phone/notifications"
+        const val CONTROL_CHANNEL = "com.perkypet.listen_my_phone/control"
 
-        // Shared with SmsReceiver. Non-null only while Flutter is actively listening
-        // (i.e. while the "Listen" switch is ON and the app process is alive).
-        var eventSink: EventChannel.EventSink? = null
+        // Non-null only while Flutter is actively listening.
+        var notifEventSink: EventChannel.EventSink? = null
     }
 }

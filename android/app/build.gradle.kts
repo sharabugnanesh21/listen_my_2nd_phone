@@ -48,4 +48,7 @@ flutter {
 dependencies {
     // Backports newer Java APIs; required by flutter_local_notifications.
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+
+    // Used by our native SMS/Call receivers to post notifications directly.
+    implementation("androidx.core:core-ktx:1.13.1")
 }
