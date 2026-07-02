@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "570979746641",
+    "project_id": "listen-my-phone",
+    "storage_bucket": "listen-my-phone.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:570979746641:android:bcc239039509a823a00970",
+        "android_client_info": {
+          "package_name": "com.perkypet.listen_my_phone"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "570979746641-f19b17j0tfnvmvklikf0p8kt64ruufnc.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.perkypet.listen_my_phone",
+            "certificate_hash": "a68c0299b2fe90c1a50feadb3fec56a36eb7744c"
+          }
+        },
+        {
+          "client_id": "570979746641-ofn1rm5v8fafmo2mc12ilnu6pop1feom.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB4DgPNGaDDA6ETbgXXP-ilRop3gY6k_jk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "570979746641-ofn1rm5v8fafmo2mc12ilnu6pop1feom.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

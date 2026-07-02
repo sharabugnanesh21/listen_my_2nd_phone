@@ -1,28 +1,24 @@
 package com.perkypet.listen_my_phone
 
 import android.app.Notification
-import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.os.Handler
 import android.os.Looper
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
 import org.json.JSONObject
 import java.util.UUID
 
 /**
- * Kept alive by the system once "Notification access" is granted — so it runs even
- * when the app UI is closed. It filters, saves, and notifies entirely natively, then
- * (if the UI is open) forwards the event to Flutter for a live update.
+ * Captures notifications and (if "Forward" is on) sends them to Firestore so the
+ * user's OTHER phones can show them. Runs in the background via notification access.
  */
 class NotificationForwarderService : NotificationListenerService() {
 
     companion object {
         private const val TAG = "NotifForwarder"
-
-        // De-dupe: apps re-post/update the same notification repeatedly. We skip a
-        // notification whose (package|title|text) we already saw within this window.
         private const val DEDUP_WINDOW_MS = 8000L
         private val recentSignatures = HashMap<String, Long>()
     }
@@ -30,8 +26,6 @@ class NotificationForwarderService : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         val notification = sbn?.notification ?: return
         val pkg = sbn.packageName ?: return
-
-        // Ignore our own notifications so we don't loop forever.
         if (pkg == packageName) return
 
         val extras = notification.extras
@@ -39,7 +33,6 @@ class NotificationForwarderService : NotificationListenerService() {
         val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
         if (title.isBlank() && text.isBlank()) return
 
-        // Only handle the apps the user chose (or everything, in discovery mode).
         val captureAll = AppStore.getCaptureAll(this)
         val enabled = AppStore.getEnabled(this)
         if (!captureAll && !enabled.contains(pkg)) return
@@ -58,11 +51,10 @@ class NotificationForwarderService : NotificationListenerService() {
         }
 
         val appName = friendlyAppName(pkg)
-        val timestamp = now
         val id = UUID.randomUUID().toString()
         Log.d(TAG, "capture $appName ($pkg): $title / $text")
 
-        // 1) Persist — so the list survives even if the app UI was never opened.
+        // 1) Save to this phone's local feed.
         AppStore.addEvent(
             this,
             JSONObject()
@@ -71,29 +63,51 @@ class NotificationForwarderService : NotificationListenerService() {
                 .put("appName", appName)
                 .put("title", title)
                 .put("text", text)
-                .put("timestamp", timestamp),
+                .put("timestamp", now),
         )
 
-        // 2) Post a notification from native code — works even when the app is killed.
-        AppNotifications.show(
-            this,
-            if (title.isBlank()) appName else "$appName · $title",
-            text.ifBlank { title },
-            appIconBitmap(pkg),
-        )
+        // 2) Forward to the cloud so my OTHER phones can show it.
+        if (AppStore.getForward(this)) {
+            forwardToCloud(pkg, appName, title, text, now, id)
+        }
 
-        // 3) If the Flutter UI happens to be open, update it live.
+        // 3) If this phone's UI is open, refresh its live feed.
         val payload = mapOf(
             "id" to id,
             "package" to pkg,
             "appName" to appName,
             "title" to title,
             "text" to text,
-            "timestamp" to timestamp,
+            "timestamp" to now,
         )
         Handler(Looper.getMainLooper()).post {
             MainActivity.notifEventSink?.success(payload)
         }
+    }
+
+    private fun forwardToCloud(
+        pkg: String,
+        appName: String,
+        title: String,
+        text: String,
+        timestamp: Long,
+        id: String,
+    ) {
+        val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
+        val data = hashMapOf(
+            "id" to id,
+            "package" to pkg,
+            "appName" to appName,
+            "title" to title,
+            "text" to text,
+            "timestamp" to timestamp,
+            "sourceDeviceId" to AppStore.getDeviceId(this),
+            "sourceDeviceName" to android.os.Build.MODEL,
+        )
+        FirebaseFirestore.getInstance()
+            .collection("users").document(uid)
+            .collection("events").add(data)
+            .addOnFailureListener { e -> Log.w(TAG, "forward failed", e) }
     }
 
     private fun friendlyAppName(pkg: String): String = try {
@@ -102,17 +116,5 @@ class NotificationForwarderService : NotificationListenerService() {
         ).toString()
     } catch (e: Exception) {
         pkg
-    }
-
-    private fun appIconBitmap(pkg: String): Bitmap? = try {
-        val drawable = packageManager.getApplicationIcon(pkg)
-        val size = 128
-        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        drawable.setBounds(0, 0, size, size)
-        drawable.draw(canvas)
-        bitmap
-    } catch (e: Exception) {
-        null
     }
 }

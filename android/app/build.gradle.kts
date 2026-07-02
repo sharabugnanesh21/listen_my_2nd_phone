@@ -3,6 +3,8 @@ plugins {
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+    // Firebase: reads google-services.json.
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -49,6 +51,11 @@ dependencies {
     // Backports newer Java APIs; required by flutter_local_notifications.
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 
-    // Used by our native SMS/Call receivers to post notifications directly.
+    // Used by our native receiver/service to post notifications directly.
     implementation("androidx.core:core-ktx:1.13.1")
+
+    // Firebase for the native side (the background service forwards to Firestore).
+    implementation(platform("com.google.firebase:firebase-bom:34.15.0"))
+    implementation("com.google.firebase:firebase-firestore")
+    implementation("com.google.firebase:firebase-auth")
 }

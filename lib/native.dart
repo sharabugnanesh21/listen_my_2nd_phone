@@ -92,4 +92,27 @@ class Native {
 
   static Future<void> clearEvents() =>
       _control.invokeMethod<void>('clearEvents');
+
+  // ---- Cross-device relay ----
+
+  /// "Forward this phone's notifications to my other phones."
+  static Future<bool> getForward() async =>
+      await _control.invokeMethod<bool>('getForward') ?? false;
+
+  static Future<void> setForward(bool value) =>
+      _control.invokeMethod<void>('setForward', value);
+
+  /// "Show notifications forwarded from my other phones."
+  static Future<bool> getReceive() async =>
+      await _control.invokeMethod<bool>('getReceive') ?? false;
+
+  static Future<void> setReceive(bool value) =>
+      _control.invokeMethod<void>('setReceive', value);
+
+  static Future<String> getDeviceId() async =>
+      await _control.invokeMethod<String>('getDeviceId') ?? '';
+
+  /// Store an event received from another phone (and pop a notification if new).
+  static Future<void> addReceivedEvent(Map<String, dynamic> data) =>
+      _control.invokeMethod<void>('addReceivedEvent', data);
 }

@@ -3,6 +3,7 @@ package com.perkypet.listen_my_phone
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.UUID
 
 /**
  * Tiny SharedPreferences-backed store shared by BOTH the Activity and the
@@ -16,6 +17,9 @@ object AppStore {
     private const val KEY_ENABLED = "enabled_packages"
     private const val KEY_CAPTURE_ALL = "capture_all"
     private const val KEY_EVENTS = "events"
+    private const val KEY_FORWARD = "forward"
+    private const val KEY_RECEIVE = "receive"
+    private const val KEY_DEVICE_ID = "device_id"
     private const val MAX_EVENTS = 200
 
     private fun prefs(context: Context) =
@@ -35,12 +39,44 @@ object AppStore {
         prefs(context).edit().putBoolean(KEY_CAPTURE_ALL, value).apply()
     }
 
+    /** "Send this phone's notifications to my other phones." */
+    fun getForward(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_FORWARD, false)
+
+    fun setForward(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_FORWARD, value).apply()
+    }
+
+    /** "Show notifications forwarded from my other phones." */
+    fun getReceive(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_RECEIVE, false)
+
+    fun setReceive(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_RECEIVE, value).apply()
+    }
+
+    /** A stable per-install id, so a device can ignore its own forwarded events. */
+    fun getDeviceId(context: Context): String {
+        val existing = prefs(context).getString(KEY_DEVICE_ID, null)
+        if (existing != null) return existing
+        val id = UUID.randomUUID().toString()
+        prefs(context).edit().putString(KEY_DEVICE_ID, id).apply()
+        return id
+    }
+
     fun getEventsJson(context: Context): String =
         prefs(context).getString(KEY_EVENTS, "[]") ?: "[]"
 
-    /** Prepends the newest event and keeps only the most recent [MAX_EVENTS]. */
+    /** Prepends the newest event and keeps only the most recent [MAX_EVENTS].
+     *  Skips events whose id we already have (dedupes re-synced remote events). */
     fun addEvent(context: Context, event: JSONObject) {
         val existing = JSONArray(getEventsJson(context))
+        val id = event.optString("id")
+        if (id.isNotEmpty()) {
+            for (i in 0 until existing.length()) {
+                if (existing.optJSONObject(i)?.optString("id") == id) return
+            }
+        }
         val updated = JSONArray()
         updated.put(event)
         val keep = minOf(existing.length(), MAX_EVENTS - 1)

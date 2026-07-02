@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import 'apps_page.dart';
+import 'auth.dart';
 import 'native.dart';
+import 'relay.dart';
 import 'theme.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -14,6 +16,8 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   bool _accessGranted = false;
   bool _captureAll = false;
+  bool _forward = false;
+  bool _receive = false;
   int _enabledCount = 0;
 
   @override
@@ -26,10 +30,14 @@ class _SettingsPageState extends State<SettingsPage> {
     final granted = await Native.isAccessGranted();
     final captureAll = await Native.getCaptureAll();
     final enabled = await Native.getEnabledPackages();
+    final forward = await Native.getForward();
+    final receive = await Native.getReceive();
     if (!mounted) return;
     setState(() {
       _accessGranted = granted;
       _captureAll = captureAll;
+      _forward = forward;
+      _receive = receive;
       _enabledCount = enabled.length;
     });
   }
@@ -41,6 +49,54 @@ class _SettingsPageState extends State<SettingsPage> {
       body: ListView(
         padding: const EdgeInsets.symmetric(vertical: 12),
         children: [
+          _section('ACCOUNT', [
+            _row(
+              icon: Icons.account_circle_outlined,
+              title: AuthService.currentUser?.email ?? 'Signed in',
+              subtitle: 'Tap to sign out',
+              trailing: const Icon(Icons.logout, color: AppColors.inkMuted),
+              onTap: () async {
+                final navigator = Navigator.of(context);
+                await AuthService.signOut();
+                navigator.popUntil((r) => r.isFirst);
+              },
+            ),
+          ]),
+          _section('SYNC BETWEEN PHONES', [
+            SwitchListTile(
+              secondary:
+                  const Icon(Icons.upload_outlined, color: AppColors.actionBlue),
+              title: Text('Forward my notifications',
+                  style: Theme.of(context).textTheme.bodyLarge),
+              subtitle: const Text(
+                'Send this phone’s notifications to your other phones '
+                '(turn ON on the SIM phone)',
+                style: TextStyle(color: AppColors.inkMuted, fontSize: 13),
+              ),
+              value: _forward,
+              onChanged: (v) async {
+                setState(() => _forward = v);
+                await Native.setForward(v);
+              },
+            ),
+            _divider(),
+            SwitchListTile(
+              secondary: const Icon(Icons.download_outlined,
+                  color: AppColors.actionBlue),
+              title: Text('Show other phones’ notifications',
+                  style: Theme.of(context).textTheme.bodyLarge),
+              subtitle: const Text(
+                'Display notifications forwarded from your other phones '
+                '(turn ON on the phone you use)',
+                style: TextStyle(color: AppColors.inkMuted, fontSize: 13),
+              ),
+              value: _receive,
+              onChanged: (v) async {
+                setState(() => _receive = v);
+                await Native.setReceive(v);
+              },
+            ),
+          ]),
           _section('LISTENING', [
             _row(
               icon: Icons.notifications_active_outlined,
@@ -104,8 +160,9 @@ class _SettingsPageState extends State<SettingsPage> {
               onTap: () async {
                 final messenger = ScaffoldMessenger.of(context);
                 await Native.clearEvents();
+                await Relay.clearRemote(); // also clear the cloud
                 messenger.showSnackBar(
-                  const SnackBar(content: Text('History cleared')),
+                  const SnackBar(content: Text('History cleared (this phone + cloud)')),
                 );
               },
             ),

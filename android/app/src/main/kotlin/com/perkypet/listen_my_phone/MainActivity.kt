@@ -13,7 +13,9 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.util.UUID
 
 class MainActivity : FlutterActivity() {
 
@@ -77,6 +79,21 @@ class MainActivity : FlutterActivity() {
                     AppStore.clearEvents(this)
                     result.success(null)
                 }
+                "getForward" -> result.success(AppStore.getForward(this))
+                "setForward" -> {
+                    AppStore.setForward(this, call.arguments as? Boolean ?: false)
+                    result.success(null)
+                }
+                "getReceive" -> result.success(AppStore.getReceive(this))
+                "setReceive" -> {
+                    AppStore.setReceive(this, call.arguments as? Boolean ?: false)
+                    result.success(null)
+                }
+                "getDeviceId" -> result.success(AppStore.getDeviceId(this))
+                "addReceivedEvent" -> {
+                    addReceivedEvent(call.arguments)
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -97,6 +114,33 @@ class MainActivity : FlutterActivity() {
         }
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         startActivity(intent)
+    }
+
+    /** Stores an event forwarded from another phone, and optionally notifies. */
+    @Suppress("UNCHECKED_CAST")
+    private fun addReceivedEvent(args: Any?) {
+        val map = args as? Map<String, Any?> ?: return
+        val appName = map["appName"] as? String ?: ""
+        val title = map["title"] as? String ?: ""
+        val text = map["text"] as? String ?: ""
+        val notify = map["notify"] as? Boolean ?: false
+
+        AppStore.addEvent(
+            this,
+            JSONObject()
+                .put("id", map["id"] as? String ?: UUID.randomUUID().toString())
+                .put("package", map["package"] as? String ?: "")
+                .put("appName", appName)
+                .put("title", title)
+                .put("text", text)
+                .put("timestamp", (map["timestamp"] as? Number)?.toLong()
+                    ?: System.currentTimeMillis()),
+        )
+
+        if (notify) {
+            val notifTitle = if (title.isBlank()) appName else "$appName · $title"
+            AppNotifications.show(this, notifTitle, text.ifBlank { title })
+        }
     }
 
     /** Has the user turned on "Notification access" for us in system settings? */

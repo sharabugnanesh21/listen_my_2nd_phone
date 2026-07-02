@@ -1,15 +1,22 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import 'auth.dart';
 import 'native.dart';
+import 'relay.dart';
 import 'settings_page.dart';
+import 'sign_in_page.dart';
 import 'theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
   runApp(const ListenMyPhoneApp());
 }
 
@@ -22,7 +29,27 @@ class ListenMyPhoneApp extends StatelessWidget {
       title: 'Listen My Phone',
       debugShowCheckedModeBanner: false,
       theme: buildAppleTheme(),
-      home: const HomePage(),
+      home: const AuthGate(),
+    );
+  }
+}
+
+/// Shows the sign-in screen until a user is signed in, then the home screen.
+class AuthGate extends StatelessWidget {
+  const AuthGate({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: AuthService.authState(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        return snapshot.data == null ? const SignInPage() : const HomePage();
+      },
     );
   }
 }
@@ -39,6 +66,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final List<CapturedEvent> _events = [];
   final Map<String, Uint8List?> _iconCache = {};
   StreamSubscription<dynamic>? _sub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _relaySub;
+  bool _relayFirst = true;
+  String _deviceId = '';
 
   @override
   void initState() {
@@ -51,6 +81,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _sub?.cancel();
+    _relaySub?.cancel();
     super.dispose();
   }
 
@@ -58,6 +89,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _refreshAll();
+      _startRelay();
     }
   }
 
@@ -67,19 +99,66 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _sub = notifChannel
         .receiveBroadcastStream()
         .listen(_onNotification, onError: (_) {});
+    await _startRelay();
   }
 
   Future<void> _refreshAll() async {
     final granted = await Native.isAccessGranted();
+    if (mounted) setState(() => _accessGranted = granted);
+    await _reloadFeed();
+  }
+
+  Future<void> _reloadFeed() async {
     final events = await Native.getEvents();
     if (!mounted) return;
     setState(() {
-      _accessGranted = granted;
       _events
         ..clear()
         ..addAll(events);
     });
     await _ensureIcons(events.map((e) => e.package));
+  }
+
+  /// Listens to the cloud relay and shows notifications forwarded from other
+  /// phones (only when "Show other phones' notifications" is on).
+  Future<void> _startRelay() async {
+    await _relaySub?.cancel();
+    _relaySub = null;
+    _relayFirst = true;
+    _deviceId = await Native.getDeviceId();
+    if (!await Native.getReceive()) return;
+
+    final stream = Relay.stream();
+    if (stream == null) return;
+
+    _relaySub = stream.listen((snapshot) async {
+      for (final change in snapshot.docChanges) {
+        final data = change.doc.data();
+        if (data == null) continue;
+        final id = (data['id'] ?? change.doc.id) as String;
+
+        // A delete on another phone → remove it here too.
+        if (change.type == DocumentChangeType.removed) {
+          await Native.removeEvent(id);
+          continue;
+        }
+
+        if (change.type != DocumentChangeType.added) continue;
+        if (data['sourceDeviceId'] == _deviceId) continue; // ignore my own
+        await Native.addReceivedEvent({
+          'id': id,
+          'package': data['package'] ?? '',
+          'appName': data['appName'] ?? '',
+          'title': data['title'] ?? '',
+          'text': data['text'] ?? '',
+          'timestamp': (data['timestamp'] as num?)?.toInt() ?? 0,
+          // Don't pop the whole history on first load — only genuinely new ones.
+          'notify': !_relayFirst,
+        });
+      }
+      _relayFirst = false;
+      await _reloadFeed();
+    });
   }
 
   /// Fetch (and cache) the icon for every package we don't already have.
@@ -94,20 +173,27 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> _onNotification(dynamic event) async {
-    final e = CapturedEvent.fromMap(Map<String, dynamic>.from(event as Map));
-    setState(() => _events.insert(0, e));
-    await _ensureIcons([e.package]);
+    // The native side already saved it; just reload the feed from the store.
+    await _reloadFeed();
   }
 
   Future<void> _deleteEvent(CapturedEvent e) async {
     setState(() => _events.removeWhere((x) => x.id == e.id));
     await Native.removeEvent(e.id);
+    await Relay.deleteRemote(e.id); // also remove from the other phones
   }
 
   Future<void> _openSettings() async {
     await Navigator.of(context)
         .push(MaterialPageRoute<void>(builder: (_) => const SettingsPage()));
     _refreshAll();
+    _startRelay(); // receive toggle may have changed
+  }
+
+  /// Reload the feed and re-sync the cloud relay.
+  Future<void> _onRefresh() async {
+    await _refreshAll();
+    await _startRelay();
   }
 
   // ---------- UI ----------
@@ -118,6 +204,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       appBar: AppBar(
         title: const Text('Listen My Phone'),
         actions: [
+          IconButton(
+            tooltip: 'Refresh',
+            icon: const Icon(Icons.refresh),
+            onPressed: _onRefresh,
+          ),
           IconButton(
             tooltip: 'Settings',
             icon: const Icon(Icons.settings_outlined),
@@ -188,11 +279,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Widget _eventList() {
-    return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-      itemCount: _events.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 10),
-      itemBuilder: (context, index) => _eventCard(_events[index]),
+    return RefreshIndicator(
+      onRefresh: _onRefresh,
+      child: ListView.separated(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        itemCount: _events.length,
+        separatorBuilder: (_, _) => const SizedBox(height: 10),
+        itemBuilder: (context, index) => _eventCard(_events[index]),
+      ),
     );
   }
 
