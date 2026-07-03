@@ -57,6 +57,7 @@ class _SettingsPageState extends State<SettingsPage> {
               trailing: const Icon(Icons.logout, color: AppColors.inkMuted),
               onTap: () async {
                 final navigator = Navigator.of(context);
+                await Native.stopRelayService();
                 await AuthService.signOut();
                 navigator.popUntil((r) => r.isFirst);
               },
@@ -94,6 +95,11 @@ class _SettingsPageState extends State<SettingsPage> {
               onChanged: (v) async {
                 setState(() => _receive = v);
                 await Native.setReceive(v);
+                if (v) {
+                  await Native.startRelayService();
+                } else {
+                  await Native.stopRelayService();
+                }
               },
             ),
           ]),

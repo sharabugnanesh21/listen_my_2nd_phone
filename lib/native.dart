@@ -115,4 +115,12 @@ class Native {
   /// Store an event received from another phone (and pop a notification if new).
   static Future<void> addReceivedEvent(Map<String, dynamic> data) =>
       _control.invokeMethod<void>('addReceivedEvent', data);
+
+  /// Start/stop the background foreground-service that receives forwarded
+  /// notifications even when the app is closed.
+  static Future<void> startRelayService() =>
+      _control.invokeMethod<void>('startRelayService');
+
+  static Future<void> stopRelayService() =>
+      _control.invokeMethod<void>('stopRelayService');
 }

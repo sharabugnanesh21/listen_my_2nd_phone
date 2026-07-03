@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -66,9 +65,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final List<CapturedEvent> _events = [];
   final Map<String, Uint8List?> _iconCache = {};
   StreamSubscription<dynamic>? _sub;
-  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _relaySub;
-  bool _relayFirst = true;
-  String _deviceId = '';
 
   @override
   void initState() {
@@ -81,7 +77,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _sub?.cancel();
-    _relaySub?.cancel();
     super.dispose();
   }
 
@@ -121,44 +116,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   /// Listens to the cloud relay and shows notifications forwarded from other
   /// phones (only when "Show other phones' notifications" is on).
+  /// Start or stop the background relay service based on the Receive toggle.
+  /// The native foreground service keeps receiving even when this app is closed;
+  /// it nudges us over [notifChannel] so the feed refreshes while we're open.
   Future<void> _startRelay() async {
-    await _relaySub?.cancel();
-    _relaySub = null;
-    _relayFirst = true;
-    _deviceId = await Native.getDeviceId();
-    if (!await Native.getReceive()) return;
-
-    final stream = Relay.stream();
-    if (stream == null) return;
-
-    _relaySub = stream.listen((snapshot) async {
-      for (final change in snapshot.docChanges) {
-        final data = change.doc.data();
-        if (data == null) continue;
-        final id = (data['id'] ?? change.doc.id) as String;
-
-        // A delete on another phone → remove it here too.
-        if (change.type == DocumentChangeType.removed) {
-          await Native.removeEvent(id);
-          continue;
-        }
-
-        if (change.type != DocumentChangeType.added) continue;
-        if (data['sourceDeviceId'] == _deviceId) continue; // ignore my own
-        await Native.addReceivedEvent({
-          'id': id,
-          'package': data['package'] ?? '',
-          'appName': data['appName'] ?? '',
-          'title': data['title'] ?? '',
-          'text': data['text'] ?? '',
-          'timestamp': (data['timestamp'] as num?)?.toInt() ?? 0,
-          // Don't pop the whole history on first load — only genuinely new ones.
-          'notify': !_relayFirst,
-        });
-      }
-      _relayFirst = false;
-      await _reloadFeed();
-    });
+    final signedIn = FirebaseAuth.instance.currentUser != null;
+    if (signedIn && await Native.getReceive()) {
+      await Native.startRelayService();
+    } else {
+      await Native.stopRelayService();
+    }
   }
 
   /// Fetch (and cache) the icon for every package we don't already have.

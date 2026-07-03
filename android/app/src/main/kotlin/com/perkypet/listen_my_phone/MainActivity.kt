@@ -94,6 +94,19 @@ class MainActivity : FlutterActivity() {
                     addReceivedEvent(call.arguments)
                     result.success(null)
                 }
+                "startRelayService" -> {
+                    val svc = Intent(this, RelayService::class.java)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(svc)
+                    } else {
+                        startService(svc)
+                    }
+                    result.success(null)
+                }
+                "stopRelayService" -> {
+                    stopService(Intent(this, RelayService::class.java))
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         }

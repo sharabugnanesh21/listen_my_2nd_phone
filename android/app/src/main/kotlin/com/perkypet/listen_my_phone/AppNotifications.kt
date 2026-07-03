@@ -1,5 +1,6 @@
 package com.perkypet.listen_my_phone
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
@@ -11,7 +12,37 @@ import androidx.core.app.NotificationManagerCompat
 /** Posts notifications from native code so they work even when the app UI is dead. */
 object AppNotifications {
     const val CHANNEL_ID = "captured_native"
+
+    // Versioned id so the lower (MIN) importance actually takes effect even if an
+    // older "relay_status" channel already exists on the device.
+    const val FG_CHANNEL_ID = "relay_status_min"
+    const val FG_NOTIFICATION_ID = 42
     private var nextId = 3000
+
+    /** The persistent notification the background relay service must show, kept as
+     *  unobtrusive as Android allows (MIN = no status-bar icon, no sound). */
+    fun buildForegroundNotification(context: Context): Notification {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = context.getSystemService(NotificationManager::class.java)
+            if (manager.getNotificationChannel(FG_CHANNEL_ID) == null) {
+                val channel = NotificationChannel(
+                    FG_CHANNEL_ID,
+                    "Background sync",
+                    NotificationManager.IMPORTANCE_MIN,
+                )
+                channel.setShowBadge(false)
+                manager.createNotificationChannel(channel)
+            }
+        }
+        return NotificationCompat.Builder(context, FG_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setContentTitle("Listen My Phone")
+            .setContentText("Listening for your other phone…")
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .build()
+    }
 
     /** Creates the channel if needed. Safe to call repeatedly. */
     fun ensureChannel(context: Context) {
